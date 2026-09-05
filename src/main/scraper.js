@@ -118,8 +118,12 @@ function resolveCamoufoxPath() {
  * Launch a browser instance.
  *
  * Camoufox mode (default):
- *   Uses the Camoufox() async function which returns a Playwright Browser
- *   pre-configured for anti-fingerprinting. This is the recommended API.
+ *   Resolves the Camoufox executable path and launches it through
+ *   Playwright's Firefox launcher (firefox.launch with executablePath).
+ *   This avoids the Camoufox() async function's incompatible
+ *   Browser.setDefaultViewport CDP payload in the current Playwright version.
+ *   If the Camoufox binary cannot be found, falls back to Playwright's
+ *   managed Firefox.
  *
  * Firefox mode (fallback):
  *   Uses Playwright's managed Firefox via firefox.launch().
@@ -138,45 +142,24 @@ async function launchBrowser() {
   logger.info('Scraper', '  Mode: ' + BROWSER_MODE);
   logger.info('Scraper', '  Headless: ' + HEADLESS);
 
-  if (BROWSER_MODE === 'camoufox' && camoufox) {
-    // Use Camoufox native API — returns a Playwright Browser
-    // with proper anti-fingerprinting pre-configured
-    var cfOpts = {
-      headless: HEADLESS,
-      os: ['macos', 'linux', 'windows'],
-      window: [VIEWPORT.width, VIEWPORT.height],
-    };
+  if (BROWSER_MODE === 'camoufox') {
+    // Resolve Camoufox executable path (env var → npm getLaunchPath → default paths)
+    const execPath = resolveCamoufoxPath();
 
-    try {
-      browser = await camoufox.Camoufox(cfOpts);
-      console.log('[Scraper] ✓ Camoufox launched via Camoufox() API');
-    } catch (cfError) {
-      console.warn('[Scraper] Camoufox() API failed:', cfError.message);
-      console.warn('[Scraper] Falling back to executablePath approach...');
-
-      // Fallback: use firefox.launch with Camoufox executable
-      var execPath = resolveCamoufoxPath();
-      if (execPath) {
-        browser = await playwright.firefox.launch({ headless: HEADLESS, executablePath: execPath });
-        console.log('[Scraper] ✓ Camoufox launched via firefox.launch + executablePath');
-      } else {
-        browser = await playwright.firefox.launch({ headless: HEADLESS });
-        console.log('[Scraper] ✓ Launched Playwright-managed Firefox (Camoufox not found)');
-      }
-    }
-  } else if (BROWSER_MODE === 'camoufox' && !camoufox) {
-    // Camoufox requested but npm package not installed
-    console.warn('[Scraper] ⚠ Camoufox npm package not installed.');
-    console.warn('[Scraper] ⚠ Run: npm install camoufox');
-    console.warn('[Scraper] ⚠ Falling back to Playwright-managed Firefox.');
-
-    var execPath = resolveCamoufoxPath();
     if (execPath) {
-      browser = await playwright.firefox.launch({ headless: HEADLESS, executablePath: execPath });
-      console.log('[Scraper] ✓ Using Camoufox binary via executablePath:', execPath);
+      console.log('[Scraper] Camoufox executable: ' + execPath);
+      browser = await playwright.firefox.launch({
+        headless: HEADLESS,
+        executablePath: execPath
+      });
+      console.log('[Scraper] ✓ Camoufox launched via Playwright Firefox executable');
     } else {
-      browser = await playwright.firefox.launch({ headless: HEADLESS });
-      console.log('[Scraper] ✓ Using Playwright-managed Firefox (fallback)');
+      // Camoufox binary not found — fall back to Playwright's managed Firefox
+      console.warn('[Scraper] ⚠ Camoufox binary not found — falling back to Playwright-managed Firefox.');
+      browser = await playwright.firefox.launch({
+        headless: HEADLESS
+      });
+      console.log('[Scraper] ✓ Launched Playwright-managed Firefox (Camoufox not found)');
     }
   } else {
     // Explicit Firefox mode
@@ -186,32 +169,43 @@ async function launchBrowser() {
 
   console.log('[Scraper] ✓ Browser launched successfully');
 
-  // IMPORTANT FIX: Do NOT pass `userAgent` when USER_AGENT is null.
-  // Playwright interprets `null` as the literal string "null", which is
-  // a dead giveaway to Cloudflare fingerprinting.
-  //
-  // Build the context options conditionally: only set userAgent when a
-  // real UA string is provided. When omitted, the browser uses its native
-  // UA which is internally consistent with its engine (Gecko for Firefox).
+  // Create the browser context.
+  // The `userAgent` option is only set when a real UA string exists.
+  // When USER_AGENT is null (default), the browser uses its native UA —
+  // the internally consistent Gecko UA for Firefox/Camoufox.
+
+  // Build context options conditionally:
+  // - Camoufox mode: viewport must be null (disable) to avoid the
+  //   incompatible Browser.setDefaultViewport CDP payload.
+  // - Firefox mode: use the standard viewport dimensions.
+  // - userAgent is only included when USER_AGENT is a real string.
   const contextOptions = {};
 
-  // For Camoufox, do NOT set viewport — its fingerprint patching is at
-  // the C++ level and Playwright 1.62's setDefaultViewport CDP call is
-  // incompatible.
   if (BROWSER_MODE === 'camoufox') {
-    browserContext = await browser.newContext(contextOptions);
-    console.log('[Scraper] ✓ Created Camoufox browser context');
+    // Camoufox mode: disable viewport entirely.
+    contextOptions.viewport = null;
   } else {
-    contextOptions.viewport = { width: VIEWPORT.width, height: VIEWPORT.height };
-    browserContext = await browser.newContext(contextOptions);
+    // Normal Firefox mode: use standard viewport.
+    contextOptions.viewport = {
+      width: VIEWPORT.width,
+      height: VIEWPORT.height
+    };
+  }
+
+  if (USER_AGENT) {
+    contextOptions.userAgent = USER_AGENT;
+  }
+
+  browserContext = await browser.newContext(contextOptions);
+
+  if (BROWSER_MODE === 'camoufox') {
+    console.log('[Scraper] ✓ Created Camoufox browser context (viewport disabled)');
+  } else {
     console.log('[Scraper] ✓ Created browser context');
   }
 
   if (USER_AGENT) {
-    // Apply UA AFTER context creation so we only set it when valid
-    // (Playwright doesn't allow modifying UA on an existing context, so
-    // we log it here; the context uses the native UA which is fine)
-    console.log('[Scraper] ✓ Custom USER_AGENT env is set (note: using native UA for consistency)');
+    console.log('[Scraper] ✓ Custom USER_AGENT env is set');
   } else {
     console.log('[Scraper] ✓ Using browser-native userAgent (no override — best for anti-detect)');
   }
