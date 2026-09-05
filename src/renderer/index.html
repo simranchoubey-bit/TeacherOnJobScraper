@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta
+    http-equiv="Content-Security-Policy"
+    content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'"
+  />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TeacherOn Tracker</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="top-header">
+    <div class="top-header__brand">
+      <span class="top-header__logo">📋</span>
+      <span class="top-header__title">TeacherOn Tracker</span>
+    </div>
+    <div class="top-header__status">
+      <span id="header-connection-dot" class="connection-dot connection-dot--online"></span>
+      <span id="header-status-text">Ready</span>
+    </div>
+  </header>
+
+  <div class="app-layout">
+    <nav class="sidebar" id="sidebar">
+      <ul class="sidebar__nav">
+        <li><a href="#" class="sidebar__item active" data-section="dashboard"><span class="sidebar__icon">📊</span><span class="sidebar__label">Dashboard</span></a></li>
+        <li><a href="#" class="sidebar__item" data-section="jobs"><span class="sidebar__icon">💼</span><span class="sidebar__label">Jobs</span></a></li>
+        <li><a href="#" class="sidebar__item" data-section="scan"><span class="sidebar__icon">🔍</span><span class="sidebar__label">Scan</span></a></li>
+        <li><a href="#" class="sidebar__item" data-section="scheduler"><span class="sidebar__icon">⏰</span><span class="sidebar__label">Scheduler</span></a></li>
+        <li><a href="#" class="sidebar__item" data-section="scan-history"><span class="sidebar__icon">📜</span><span class="sidebar__label">Scan History</span></a></li>
+        <li><a href="#" class="sidebar__item" data-section="logs"><span class="sidebar__icon">📝</span><span class="sidebar__label">Logs</span></a></li>
+        <li><a href="#" class="sidebar__item" data-section="settings"><span class="sidebar__icon">⚙️</span><span class="sidebar__label">Settings</span></a></li>
+      </ul>
+      <div class="sidebar__footer">
+        <span class="sidebar__version">v1.0.0</span>
+      </div>
+    </nav>
+
+    <main class="main-content" id="main-content">
+      <section class="content-section active" id="section-dashboard">
+        <h2 class="section-title">Dashboard</h2>
+        <div class="stats-grid">
+          <div class="stat-card"><div class="stat-card__value" id="dash-total-jobs">—</div><div class="stat-card__label">Total Jobs</div></div>
+          <div class="stat-card stat-card--highlight"><div class="stat-card__value" id="dash-new-today">—</div><div class="stat-card__label">New Today</div></div>
+          <div class="stat-card"><div class="stat-card__value" id="dash-last-scan">—</div><div class="stat-card__label">Last Scan</div></div>
+          <div class="stat-card"><div class="stat-card__value" id="dash-next-scan">—</div><div class="stat-card__label">Next Scan</div></div>
+        </div>
+        <div class="dashboard-panels">
+          <div class="card"><h3>Scheduler</h3><div class="scheduler-indicator"><span class="scheduler-dot" id="dash-scheduler-dot"></span><span id="dash-scheduler-text">—</span></div></div>
+          <div class="card"><h3>Current Scan</h3><div class="scan-indicator"><span class="scan-dot" id="dash-scan-dot"></span><span id="dash-scan-text">Idle</span></div></div>
+        </div>
+        <div class="card"><h3>Recent Jobs</h3><div id="dash-recent-jobs" class="dash-recent-list"><div class="empty-state">No jobs yet. Start a scan to discover opportunities.</div></div></div>
+        <div class="card"><h3>Recent Scan Activity</h3><div id="dash-recent-scans" class="dash-recent-list"><div class="empty-state">No scans yet.</div></div></div>
+      </section>
+
+      <section class="content-section" id="section-jobs">
+        <div class="section-header"><h2 class="section-title">Jobs</h2><span id="jobs-total-count" class="section-badge">0 jobs</span></div>
+        <div class="card">
+          <div class="toolbar">
+            <div class="toolbar__search"><input type="text" id="jobs-search" class="input input--search" placeholder="Search jobs..." autocomplete="off" /></div>
+            <div class="toolbar__filters"><input type="text" id="jobs-filter-subject" class="input" placeholder="Filter by subject..." autocomplete="off" /><input type="text" id="jobs-filter-location" class="input" placeholder="Filter by location..." autocomplete="off" /></div>
+            <div class="toolbar__actions"><button id="jobs-refresh-btn" class="btn btn-outline btn-sm">🔄 Refresh</button><button id="jobs-clear-btn" class="btn btn-danger btn-sm">🗑️ Clear All</button></div>
+          </div>
+          <div id="jobs-list" class="jobs-list"><div class="empty-state">No jobs saved yet. Run a scan to collect job listings.</div></div>
+        </div>
+      </section>
+
+      <section class="content-section" id="section-scan">
+        <h2 class="section-title">Scan</h2>
+        <div class="card">
+          <h3>Scan Settings</h3>
+          <div class="input-row">
+            <div class="input-group"><label for="subject-input">Subject</label><input type="text" id="subject-input" class="input" placeholder="e.g. Mathematics, Physics, English..." autocomplete="off" /></div>
+            <div class="input-group"><label for="location-input">Location (optional)</label><input type="text" id="location-input" class="input" placeholder="e.g. Mumbai, Delhi, Online..." autocomplete="off" /></div>
+            <div class="input-group input-group--small"><label for="max-pages-input">Max Pages</label><input type="number" id="max-pages-input" class="input" value="3" min="1" max="10" step="1" /></div>
+          </div>
+          <div class="button-row">
+            <button id="scan-start-btn" class="btn btn-primary"><span id="scan-start-icon">▶</span> Search Tutor Jobs</button>
+            <button id="scan-stop-btn" class="btn btn-danger" disabled><span>⏹</span> Stop scan</button>
+          </div>
+          <div class="scan-shortcut-hint">Shortcut: ⌘+Shift+S (Mac) / Ctrl+Shift+S</div>
+        </div>
+        <section id="status-section" class="card status-area hidden">
+          <h3>Scan Status</h3>
+          <div id="status-badge" class="status-badge status-badge--idle">Idle</div>
+          <div id="status-detail" class="status-detail"></div>
+          <div id="progress-bar-container" class="progress-bar-container hidden"><div id="progress-bar" class="progress-bar"></div></div>
+          <div id="status-stats" class="status-stats"></div>
+          <div id="status-error" class="status-error hidden"></div>
+        </section>
+        <section id="results-section" class="card results-area hidden">
+          <div class="results-header">
+            <h3>Results</h3>
+            <div class="results-header-actions"><span id="results-count" class="results-count"></span><span id="stopped-reason" class="stopped-reason hidden"></span></div>
+          </div>
+          <div id="results-table" class="results-table"></div>
+          <div id="results-empty" class="results-empty hidden">No job listings found. Try a different subject or location.</div>
+        </section>
+      </section>
+
+      <section class="content-section" id="section-scheduler">
+        <h2 class="section-title">Scheduler</h2>
+        <div class="card">
+          <h3>Configuration</h3>
+          <p class="section-desc">Automatically run scans at regular intervals</p>
+          <div class="input-row">
+            <div class="input-group input-group--small"><label for="scheduler-interval">Interval</label><select id="scheduler-interval" class="input"><option value="30">30 minutes</option><option value="60" selected>60 minutes</option></select></div>
+          </div>
+          <div class="button-row">
+            <button id="scheduler-start-btn" class="btn btn-primary"><span id="scheduler-start-icon">▶</span> Start Scheduler</button>
+            <button id="scheduler-stop-btn" class="btn btn-danger" disabled><span>⏹</span> Stop Scheduler</button>
+          </div>
+        </div>
+        <div class="card">
+          <h3>Status</h3>
+          <div id="scheduler-status" class="scheduler-status hidden">
+            <div class="scheduler-status-row"><span class="stat-label">Status:</span><span id="scheduler-state-text" class="stat-value">—</span></div>
+            <div class="scheduler-status-row"><span class="stat-label">Interval:</span><span id="scheduler-interval-text" class="stat-value">—</span></div>
+            <div class="scheduler-status-row"><span class="stat-label">Next run:</span><span id="scheduler-next-run" class="stat-value">—</span></div>
+            <div class="scheduler-status-row"><span class="stat-label">Total runs:</span><span id="scheduler-run-count" class="stat-value">0</span></div>
+            <div class="scheduler-status-row"><span class="stat-label">Last run:</span><span id="scheduler-last-run" class="stat-value">—</span></div>
+          </div>
+          <div id="scheduler-idle" class="scheduler-idle">Scheduler is not running. Configure and start above.</div>
+          <div id="scheduler-error" class="status-error hidden"></div>
+        </div>
+      </section>
+
+      <section class="content-section" id="section-scan-history">
+        <div class="section-header">
+          <h2 class="section-title">Scan History</h2>
+          <button id="scan-history-clear-btn" class="btn btn-outline btn-sm">🗑️ Clear History</button>
+        </div>
+        <div class="card">
+          <div id="scan-history-list" class="scan-history-list"><div class="empty-state">No scan history yet. Run a scan to see results here.</div></div>
+        </div>
+      </section>
+
+      <section class="content-section" id="section-logs">
+        <div class="section-header">
+          <h2 class="section-title">Logs</h2>
+          <div class="logs-toolbar">
+            <select id="logs-filter" class="input input--small"><option value="all">All</option><option value="ERROR">Errors</option><option value="WARN">Warnings</option><option value="INFO">Info</option></select>
+            <button id="logs-clear-btn" class="btn btn-outline btn-sm">✕ Clear</button>
+          </div>
+        </div>
+        <div class="card">
+          <div id="logs-list" class="logs-list"><div class="empty-state">No log entries yet.</div></div>
+        </div>
+      </section>
+
+      <section class="content-section" id="section-settings">
+        <h2 class="section-title">Settings</h2>
+        <div class="card">
+          <h3>Scraping Defaults</h3>
+          <div class="input-row">
+            <div class="input-group input-group--small"><label for="settings-default-pages">Default Max Pages</label><input type="number" id="settings-default-pages" class="input" value="3" min="1" max="10" step="1" /></div>
+            <div class="input-group input-group--small"><label for="settings-default-interval">Default Interval (min)</label><select id="settings-default-interval" class="input"><option value="30">30</option><option value="60" selected>60</option></select></div>
+          </div>
+        </div>
+        <div class="card">
+          <h3>Browser</h3>
+          <div class="settings-info">
+            <div class="settings-row"><span class="stat-label">Browser Mode:</span><span class="stat-value" id="settings-browser-mode">—</span></div>
+            <div class="settings-row"><span class="stat-label">Headless:</span><span class="stat-value" id="settings-headless">—</span></div>
+          </div>
+        </div>
+        <div class="card">
+          <h3>Database</h3>
+          <div class="settings-info">
+            <div class="settings-row"><span class="stat-label">Total Jobs:</span><span class="stat-value" id="settings-db-jobs">—</span></div>
+            <div class="settings-row"><span class="stat-label">Location:</span><span class="stat-value settings-db-path" id="settings-db-path">—</span></div>
+          </div>
+          <div class="button-row"><button id="settings-clear-db-btn" class="btn btn-danger btn-sm">🗑️ Clear Database</button></div>
+        </div>
+        <div class="card">
+          <h3>About</h3>
+          <div class="settings-info">
+            <div class="settings-row"><span class="stat-label">App:</span><span class="stat-value" id="settings-app-name">—</span></div>
+            <div class="settings-row"><span class="stat-label">Version:</span><span class="stat-value" id="settings-app-version">—</span></div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>

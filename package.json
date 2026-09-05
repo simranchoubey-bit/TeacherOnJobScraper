@@ -1,0 +1,40 @@
+{
+  "name": "teacheron-scraper",
+  "version": "1.0.0",
+  "description": "Desktop application to scrape tutor job listings from TeacherOn.com",
+  "main": "src/main/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "rebuild": "@electron/rebuild",
+    "postinstall": "@electron/rebuild",
+    "browser:test": "node src/scripts/browser-test.js",
+    "scraper:test": "node src/scripts/scraper-test.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/simranchoubey-bit/TeacherOnJobScraper.git"
+  },
+  "keywords": [
+    "electron",
+    "scraper",
+    "teacheron",
+    "tutor-jobs"
+  ],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/simranchoubey-bit/TeacherOnJobScraper/issues"
+  },
+  "homepage": "https://github.com/simranchoubey-bit/TeacherOnJobScraper#readme",
+  "devDependencies": {
+    "@electron/rebuild": "^4.2.0",
+    "electron": "^44.2.0"
+  },
+  "dependencies": {
+    "better-sqlite3": "^13.0.3",
+    "camoufox": "^0.1.19",
+    "node-cron": "^4.6.0",
+    "playwright": "^1.62.1"
+  }
+}
