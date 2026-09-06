@@ -127,8 +127,8 @@ Main Process (Electron)
 ### How Scraping Works
 
 1. **Search URL** — Uses TeacherOn's URL routing: `https://www.teacheron.com/{subject}-tutor-jobs`
-2. **Page 1** — Opens the base URL and extracts listing cards
-3. **Pagination** — Follows `ul.pagination a[title="Next page"]` links via `?p=N`
+2. **Page 1** — Opens the base URL, scrolls the results container/document to trigger lazy-loading, then extracts listing cards
+3. **Pagination** — Follows `ul.pagination a[title="Next page"]` links via `?p=N`, with fallbacks for other pagination controls. Verifies the page URL/number actually changed before continuing.
 4. **Deduplication** — `job_url` UNIQUE constraint + in-memory `Set` prevent duplicates
 5. **Cloudflare protection** — Detects challenges via page title/body signals and stops cleanly (no bypass attempted)
 6. **Pacing** — Configurable delay (default 2000ms) between page navigations to avoid blocking
@@ -138,8 +138,9 @@ Main Process (Electron)
 | Function | Purpose |
 |----------|---------|
 | `scrapePages(page, options)` | Orchestrates multi-page extraction |
-| `getNextPageUrl(page)` | Extracts next-page URL from pagination DOM |
-| `navigateToNextPage(page, url, delayMs)` | Navigates with pacing delay |
+| `scrollResultsPage(page)` | Scrolls the results container/document gradually to trigger lazy-loaded content |
+| `getNextPageUrl(page)` | Extracts next-page URL from pagination DOM (with fallbacks) |
+| `navigateToNextPage(page, url, delayMs)` | Navigates with pacing delay + verifies page change |
 | `isBlockedByCloudflare(page)` | Detects CF challenges via page signals |
 
 ### Stopped Reasons

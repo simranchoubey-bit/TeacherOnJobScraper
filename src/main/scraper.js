@@ -424,6 +424,142 @@ async function searchTeacherOn(page, options = {}) {
   return { url: page.url(), title: await page.title() };
 }
 
+// ─── Phase 4.5: Scrolling ──────────────────────────────────────────────────
+
+/**
+ * Scroll the TeacherOn results container (or the document) gradually,
+ * in small increments with brief waits, to trigger any lazy-loaded cards.
+ *
+ * Behavior:
+ *   - Detects the listing container (#tutorOrJobSearchItemList) if it exists
+ *     and is scrollable. Otherwise scrolls the document/window.
+ *   - Scrolls gradually (≈0.8 viewport per step) rather than jumping to bottom.
+ *   - Waits briefly (≈120ms) between scroll steps for lazy-load triggers.
+ *   - Detects when the bottom has been reached and stops.
+ *   - Respects the abort signal.
+ *   - Hard cap on iterations to prevent infinite loops.
+ *
+ * @param {import('playwright').Page} page
+ * @returns {Promise<{containerScrollable: boolean, steps: number, reachedBottom: boolean}>}
+ */
+async function scrollResultsPage(page) {
+  if (!page || page.isClosed()) return { containerScrollable: false, steps: 0, reachedBottom: false };
+
+  console.log('[Scraper] scrolling results...');
+
+  // Determine scroll context: prefer the listing container.
+  const scrollPlan = await page.evaluate(() => {
+    const container = document.querySelector('#tutorOrJobSearchItemList');
+    const doc = document.documentElement;
+    const maxScrollSteps = 40;
+
+    // Determine which element to scroll.
+    let target = null;
+    let isContainerScrollable = false;
+
+    if (container) {
+      const cs = window.getComputedStyle(container);
+      // A container is scrollable when its content overflows its client area.
+      if (container.scrollHeight > container.clientHeight + 10) {
+        target = container;
+        isContainerScrollable = true;
+      }
+    }
+    if (!target) {
+      // Fall back to the document/window.
+      const docScrollable = (doc.scrollHeight - doc.clientHeight) > 10;
+      if (docScrollable) {
+        target = doc;
+      }
+    }
+    if (!target) {
+      return { hasTarget: false, isContainerScrollable: false, totalSteps: 0, maxSteps: maxScrollSteps };
+    }
+
+    const totalSteps = isContainerScrollable
+      ? Math.max(1, Math.ceil((container.scrollHeight - container.clientHeight) / (container.clientHeight * 0.8)))
+      : Math.max(1, Math.ceil((doc.scrollHeight - doc.clientHeight) / (doc.clientHeight * 0.8)));
+
+    return {
+      hasTarget: true,
+      isContainerScrollable,
+      totalSteps: Math.min(totalSteps, maxScrollSteps),
+      maxSteps: maxScrollSteps,
+    };
+  });
+
+  if (!scrollPlan || !scrollPlan.hasTarget) {
+    console.log('[Scraper] No scrollable results container / document found — nothing to scroll.');
+    return { containerScrollable: false, steps: 0, reachedBottom: true };
+  }
+
+  console.log(
+    `[Scraper] ${scrollPlan.isContainerScrollable ? 'Scrolling results container' : 'Scrolling document'} — ${scrollPlan.totalSteps} step(s)`
+  );
+
+  let steps = 0;
+  let reachedBottom = false;
+
+  for (let i = 0; i < scrollPlan.totalSteps; i++) {
+    // Respect abort signal — stop scrolling if user cancelled.
+    if (isAborted()) {
+      console.log('[Scraper] Abort signal — stopping scroll routine.');
+      break;
+    }
+
+    const info = await page.evaluate(({ useContainer }) => {
+      const container = document.querySelector('#tutorOrJobSearchItemList');
+      const isContainerScrollable = useContainer && container && (container.scrollHeight > container.clientHeight + 10);
+      let scrollAmount = 0;
+
+      if (isContainerScrollable) {
+        scrollAmount = Math.min(
+          container.clientHeight * 0.8,
+          container.scrollHeight - container.scrollTop - container.clientHeight
+        );
+        container.scrollTop += scrollAmount;
+        return {
+          atBottom: container.scrollTop + container.clientHeight >= container.scrollHeight - 10,
+          scrollTop: container.scrollTop,
+          scrollHeight: container.scrollHeight,
+        };
+      }
+      // Document scroll.
+      scrollAmount = Math.min(
+        window.innerHeight * 0.8,
+        document.documentElement.scrollHeight - window.scrollY - window.innerHeight
+      );
+      window.scrollBy(0, scrollAmount);
+      return {
+        atBottom: window.scrollY + window.innerHeight >= document.documentElement.scrollHeight - 10,
+        scrollTop: window.scrollY,
+        scrollHeight: document.documentElement.scrollHeight,
+      };
+    }, { useContainer: scrollPlan.isContainerScrollable });
+
+    steps++;
+
+    if (info.atBottom) {
+      reachedBottom = true;
+      console.log(`[Scraper] reached bottom at step ${steps}`);
+      break;
+    }
+
+    // Brief wait between scroll steps — allows lazy-load to fire.
+    await page.waitForTimeout(120);
+  }
+
+  if (!reachedBottom) {
+    console.log(`[Scraper] scroll routine finished after ${steps} step(s) without explicit bottom`);
+  }
+
+  return {
+    containerScrollable: !!scrollPlan.isContainerScrollable,
+    steps,
+    reachedBottom,
+  };
+}
+
 // ─── Phase 4: Listing Extraction ───────────────────────────────────────────
 
 /**
@@ -437,16 +573,27 @@ async function searchTeacherOn(page, options = {}) {
  * Relative URLs are resolved; invalid protocols are rejected (set to null).
  *
  * @param {import('playwright').Page} page — page on a TeacherOn listing URL
+ * @param {object} [options]
+ * @param {boolean} [options.scroll=true] — if true, runs the scroll routine
+ *   before extracting. Keep this independent of the extraction itself:
+ *   all cards already present in the DOM are always extracted.
+ * @param {string} [options.pageLabel=''] — e.g. 'Page 1' for logging
  * @returns {Promise<Array<object>>}
  */
-async function scrapeListingPage(page) {
+async function scrapeListingPage(page, options = {}) {
+  const { scroll = true, pageLabel = '' } = options;
+
   if (!page || page.isClosed()) {
     throw new Error('Cannot scrape: page is closed or invalid.');
   }
 
   const sel = LISTING_SELECTORS;
+  const prefix = pageLabel ? `[Scraper] ${pageLabel}: ` : '[Scraper] ';
 
-  console.log('[Scraper] Extracting listings from page...');
+  // Count cards before any scrolling — we want to know how many are
+  // already in the DOM vs. how many appear after scrolling.
+  const beforeScrollCount = await page.locator(sel.card).count();
+  console.log(`${prefix}found ${beforeScrollCount} cards before scrolling`);
 
   // Check for "no results" first
   const noResultsCount = await page.locator('#noRecordFoundOnSearchDiv').count();
@@ -455,9 +602,26 @@ async function scrapeListingPage(page) {
       (el) => window.getComputedStyle(el).display !== 'none'
     );
     if (visible) {
-      console.log('[Scraper] No results found on this page.');
+      console.log(`${prefix}No results found on this page.`);
       return [];
     }
+  }
+
+  // Scroll the results container / document to trigger any lazy-loaded cards.
+  // This is separate from extraction — even if scrolling finds nothing new,
+  // the cards already present are still extracted below.
+  let scrollResult = null;
+  if (scroll) {
+    console.log(`${prefix}scrolling results`);
+    scrollResult = await scrollResultsPage(page);
+    if (scrollResult && scrollResult.steps === 0) {
+      console.log(`${prefix}no scrolling needed (content fits viewport)`);
+    }
+  }
+
+  // Double-check page is still alive after scrolling
+  if (page.isClosed()) {
+    throw new Error('Page closed during scroll routine.');
   }
 
   // Extract using $$eval for deterministic DOM access
@@ -531,7 +695,7 @@ async function scrapeListingPage(page) {
     });
   }
 
-  console.log(`[Scraper] ${rawListings.length} card(s) → ${processed.length} unique listing(s)`);
+  console.log(`${prefix}extracted ${processed.length} jobs from ${rawListings.length} card(s)`);
   return processed;
 }
 
@@ -611,33 +775,123 @@ async function isBlockedByCloudflare(page) {
 
 /**
  * Extract the next-page URL from the pagination controls.
+ *
+ * Tries, in order:
+ *   1. The configured PAGINATION_SELECTORS.nextPageLink (a[title="Next page"]).
+ *   2. Any pagination link whose visible text is ">" or contains "next".
+ *   3. Any pagination link whose aria-label / title contains "next".
+ *   4. If a numeric pagination link exists next to the active page, take its href.
+ *
  * Returns null if no next page exists, link is disabled, or invalid.
+ * For numeric fallback (option 4), the URL is composed from the active page
+ * number's +1 href if it exists, otherwise constructed with ?p=N+1.
  */
 async function getNextPageUrl(page) {
   try {
     const sel = PAGINATION_SELECTORS;
-    const containerCount = await page.locator(sel.container).count();
-    if (containerCount === 0) {
-      console.log('[Scraper] No pagination container found — no next page.');
-      return null;
+    const currentUrl = page.url();
+    const base = TEACHERON_SEARCH_BASE_URL;
+
+    // Helper to validate and resolve a candidate href.
+    function resolveHref(rawHref) {
+      if (!rawHref || rawHref.trim() === '') return null;
+      try {
+        const resolved = new URL(rawHref, base);
+        if (resolved.protocol !== 'http:' && resolved.protocol !== 'https:') {
+          console.warn('[Scraper] Invalid next-page URL protocol:', resolved.protocol, rawHref);
+          return null;
+        }
+        // Don't return the same URL we're currently on (would loop).
+        if (resolved.href === currentUrl) {
+          console.log('[Scraper] Next-page URL is identical to current URL — ignoring.');
+          return null;
+        }
+        return resolved.href;
+      } catch {
+        return null;
+      }
     }
+
+    // 1. Primary: configured `a[title="Next page"]` selector.
     const nextLinkCount = await page.locator(sel.nextPageLink).count();
-    if (nextLinkCount === 0) {
-      console.log('[Scraper] No "Next page" link found — last page reached.');
-      return null;
+    if (nextLinkCount > 0) {
+      const href = await page.locator(sel.nextPageLink).getAttribute('href');
+      const resolved = resolveHref(href);
+      if (resolved) {
+        console.log('[Scraper] Next-page URL (primary link):', resolved);
+        return resolved;
+      }
+      // Link exists but href is missing/empty — maybe it's a JS-triggered button.
+      console.log('[Scraper] Next-page link exists but has no usable href.');
     }
-    const href = await page.locator(sel.nextPageLink).getAttribute('href');
-    if (!href || href.trim() === '') {
-      console.log('[Scraper] Next-page link exists but has no href.');
+
+    // 2. Fallback: any pagination link whose text is ">" or contains "next"/"Next".
+    const paginationText = await page.evaluate(() => {
+      const container = document.querySelector('ul.pagination');
+      if (!container) return null;
+      const links = container.querySelectorAll('a');
+      for (const a of links) {
+        const text = (a.innerText || a.textContent || '').trim();
+        const title = (a.getAttribute('title') || '').toLowerCase();
+        const aria = (a.getAttribute('aria-label') || '').toLowerCase();
+        if (text === '>' || text === '»' || text === '›' ||
+            text.toLowerCase().includes('next') ||
+            title.includes('next') || aria.includes('next')) {
+          return {
+            href: a.getAttribute('href'),
+            text,
+            title: a.getAttribute('title'),
+          };
+        }
+      }
       return null;
+    });
+    if (paginationText && paginationText.href) {
+      const resolved = resolveHref(paginationText.href);
+      if (resolved) {
+        console.log('[Scraper] Next-page URL (fallback: pagination text → href):', resolved);
+        return resolved;
+      }
     }
-    const resolved = new URL(href, TEACHERON_SEARCH_BASE_URL);
-    if (resolved.protocol !== 'http:' && resolved.protocol !== 'https:') {
-      console.warn('[Scraper] Invalid next-page URL protocol:', resolved.protocol);
+
+    // 3. Fallback: find the page-number link right after the active page.
+    const nextByPageNum = await page.evaluate(() => {
+      const container = document.querySelector('ul.pagination');
+      if (!container) return null;
+      const active = container.querySelector('li.active');
+      if (!active) return null;
+      const link = active.nextElementSibling ? active.nextElementSibling.querySelector('a') : null;
+      if (link) {
+        return {
+          href: link.getAttribute('href'),
+          text: (link.innerText || link.textContent || '').trim(),
+        };
+      }
       return null;
+    });
+    if (nextByPageNum && nextByPageNum.href) {
+      const resolved = resolveHref(nextByPageNum.href);
+      if (resolved) {
+        console.log('[Scraper] Next-page URL (next sibling page link):', resolved);
+        return resolved;
+      }
     }
-    console.log('[Scraper] Next-page URL:', resolved.href);
-    return resolved.href;
+
+    // 4. Fallback: construct ?p=N+1 from the current page number.
+    const pageNum = await getCurrentPageNumber(page);
+    if (pageNum) {
+      const constructed = currentUrl.includes('?')
+        ? currentUrl.replace(/[?&]p=\d+/, `?p=${pageNum + 1}`)
+        : currentUrl + `?p=${pageNum + 1}`;
+      const resolved = resolveHref(constructed);
+      if (resolved && resolved !== currentUrl) {
+        console.log(`[Scraper] Next-page URL (constructed ?p=${pageNum + 1}):`, resolved);
+        return resolved;
+      }
+    }
+
+    console.log('[Scraper] No next-page control found — last page reached.');
+    return null;
   } catch (error) {
     console.warn('[Scraper] Error extracting next-page URL:', error.message);
     return null;
@@ -661,14 +915,27 @@ async function getCurrentPageNumber(page) {
 /**
  * Navigate to the next listing page and wait for cards to appear.
  * Includes configurable delay for anti-bot pacing.
+ *
+ * Verifies the page URL or page number actually changed after navigation,
+ * so we don't get stuck scraping the same page repeatedly.
+ *
+ * @param {import('playwright').Page} page
+ * @param {string} url — the next page URL
+ * @param {number} [delayMs] — anti-bot pacing delay
+ * @param {number} [pageNum] — expected page number (for verification)
+ * @returns {Promise<{success: boolean, urlChanged: boolean, pageNumChanged: boolean}>}
  */
-async function navigateToNextPage(page, url, delayMs = PAGE_DELAY_MS) {
+async function navigateToNextPage(page, url, delayMs = PAGE_DELAY_MS, pageNum = null) {
   try {
-    console.log(`[Scraper] Navigating to next page: ${url}`);
+    const beforeUrl = page.url();
+    const beforePageNum = pageNum || await getCurrentPageNumber(page);
+
+    console.log(`[Scraper] Navigating to page ${(beforePageNum || 1) + 1}: ${url}`);
     if (delayMs > 0) {
       console.log(`[Scraper] Pacing delay ${delayMs}ms before navigation...`);
       await page.waitForTimeout(delayMs);
     }
+
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: NAVIGATION_TIMEOUT_MS });
     await page.waitForSelector(
       `${LISTING_SELECTORS.card}, #noRecordFoundOnSearchDiv`,
@@ -676,11 +943,25 @@ async function navigateToNextPage(page, url, delayMs = PAGE_DELAY_MS) {
     ).catch(() => {
       console.warn('[Scraper] Listing cards did not appear after navigation.');
     });
+
+    // Verify the page changed.
+    const afterUrl = page.url();
+    const afterPageNum = await getCurrentPageNumber(page);
+    const urlChanged = afterUrl !== beforeUrl;
+    const pageNumChanged = (afterPageNum !== null && afterPageNum !== beforePageNum) ||
+      (afterPageNum !== null && beforePageNum === null);
+
+    if (urlChanged) {
+      console.log(`[Scraper] Page navigated to: ${afterUrl}`);
+    } else {
+      console.warn('[Scraper] ⚠ URL did not change after navigation — may be stuck on same page.');
+    }
+
     // Cloudflare detection is handled by the caller (scrapePages)
-    return true;
+    return { success: true, urlChanged, pageNumChanged };
   } catch (error) {
     logger.error('Scraper', 'Navigation error on next page: ' + error.message);
-    return false;
+    return { success: false, urlChanged: false, pageNumChanged: false };
   }
 }
 
@@ -722,8 +1003,20 @@ async function scrapePages(page, options = {}) {
 
     const currentPageNum = await getCurrentPageNumber(page);
     console.log(`\n[Scraper] ═══ Page ${currentPageNum || 1} ═══`);
+    console.log(`[Scraper] Page 1 loaded`);
 
-    const page1Listings = await scrapeListingPage(page);
+    // ---- Page 1: scroll → extract → dedupe ----
+    let page1Listings = [];
+    try {
+      page1Listings = await scrapeListingPage(page, {
+        scroll: true,
+        pageLabel: 'Page 1',
+      });
+    } catch (scrapeError) {
+      logger.error('Scraper', 'Page 1 scrape error: ' + scrapeError.message);
+      stoppedReason = 'scrape-error';
+      return { listings: [], pagesScraped: 0, stoppedReason };
+    }
     pagesScraped = 1;
 
     for (const listing of page1Listings) {
@@ -732,16 +1025,21 @@ async function scrapePages(page, options = {}) {
         allListings.push(listing);
       }
     }
-    console.log(
-      `[Scraper] Page ${pagesScraped}: ${page1Listings.length} card(s) → total unique: ${allListings.length}`
-    );
+    console.log(`[Scraper] Page 1: extracted ${page1Listings.length} jobs`);
+    console.log(`[Scraper] Page 1: total unique so far: ${allListings.length}`);
 
     if (maxPages <= 1 || isAborted()) {
       stoppedReason = isAborted() ? 'user-aborted' : 'max-pages';
+      if (maxPages <= 1) console.log(`[Scraper] Reached MAX_PAGES=${maxPages}`);
       return { listings: allListings, pagesScraped, stoppedReason };
     }
 
     let nextUrl = await getNextPageUrl(page);
+    if (nextUrl) {
+      console.log(`[Scraper] Page 1: next page detected: ${nextUrl}`);
+    } else {
+      console.log('[Scraper] Page 1: no next page detected');
+    }
 
     while (nextUrl && pagesScraped < maxPages) {
       // Phase 8: Check abort signal before each page navigation
@@ -757,12 +1055,14 @@ async function scrapePages(page, options = {}) {
         break;
       }
 
+      const nextPageNum = pagesScraped + 1;
+
       // Phase 8: Catch per-page errors so we preserve previous results
-      let navSuccess = false;
+      let navResult = null;
       try {
-        navSuccess = await navigateToNextPage(page, nextUrl, delayMs);
+        navResult = await navigateToNextPage(page, nextUrl, delayMs);
       } catch (navError) {
-        console.error('[Scraper] Navigation error on page', pagesScraped + 1, ':', navError.message);
+        console.error('[Scraper] Navigation error on page', nextPageNum, ':', navError.message);
         // Check if page/browser is still alive
         if (page.isClosed()) {
           console.warn('[Scraper] Page was closed during navigation — stopping');
@@ -773,23 +1073,28 @@ async function scrapePages(page, options = {}) {
         break;
       }
 
-      if (!navSuccess) {
+      if (!navResult || !navResult.success) {
         stoppedReason = 'navigation-error';
         break;
       }
 
       visitedPageUrls.add(nextUrl);
 
-      // Phase 8: Check page health before scraping
-      if (page.isClosed()) {
-        console.warn('[Scraper] Page closed mid-pagination — stopping');
-        stoppedReason = 'page-closed';
+      // Verify the page actually changed — if neither URL nor page number
+      // changed, we're stuck on the same page. Stop to avoid a loop.
+      const changed = navResult.urlChanged || navResult.pageNumChanged;
+      if (!changed) {
+        console.warn('[Scraper] ⚠ Page did not change after navigation — stopping to prevent loop.');
+        stoppedReason = 'no-page-change';
         break;
       }
 
+      console.log(`[Scraper] Navigating to page ${nextPageNum}`);
+      console.log(`[Scraper] Page ${nextPageNum} loaded`);
+
       try {
         if (await isBlockedByCloudflare(page)) {
-          console.log('[Scraper] Cloudflare challenge detected on page ' + (pagesScraped + 1));
+          console.log(`[Scraper] Cloudflare challenge detected on page ${nextPageNum}`);
           // Wait and retry once before giving up — Cloudflare JS challenges
           // sometimes auto-solve after a few seconds with a valid fingerprint
           const retryBlocked = await waitForCloudflareResolution(page);
@@ -804,15 +1109,25 @@ async function scrapePages(page, options = {}) {
         // Not critical — continue scraping
       }
 
+      // Phase 8: Check page health before scraping
+      if (page.isClosed()) {
+        console.warn('[Scraper] Page closed mid-pagination — stopping');
+        stoppedReason = 'page-closed';
+        break;
+      }
+
       const pageNum = await getCurrentPageNumber(page);
-      console.log(`\n[Scraper] ═══ Page ${pageNum || pagesScraped + 1} ═══`);
+      console.log(`\n[Scraper] ═══ Page ${pageNum || nextPageNum} ═══`);
 
       // Phase 8: Catch per-page scrape errors — preserve existing results
       let pageListings = [];
       try {
-        pageListings = await scrapeListingPage(page);
+        pageListings = await scrapeListingPage(page, {
+          scroll: true,
+          pageLabel: `Page ${nextPageNum}`,
+        });
       } catch (scrapeError) {
-        logger.error('Scraper', 'Scrape error on page ' + (pagesScraped + 1) + ': ' + scrapeError.message);
+        logger.error('Scraper', 'Scrape error on page ' + nextPageNum + ': ' + scrapeError.message);
         stoppedReason = 'scrape-error';
         break;
       }
@@ -834,11 +1149,17 @@ async function scrapePages(page, options = {}) {
       }
 
       const dupes = pageListings.length - addedCount;
+      console.log(`[Scraper] Page ${pagesScraped}: extracted ${pageListings.length} jobs (${addedCount} new, ${dupes} dupes)`);
       logger.info('Scraper', 'Page ' + pagesScraped + ': ' + pageListings.length + ' card(s) → ' +
         addedCount + ' new, ' + dupes + ' dupes → total unique: ' + allListings.length);
 
       try {
         nextUrl = await getNextPageUrl(page);
+        if (nextUrl) {
+          console.log(`[Scraper] Page ${pagesScraped}: next page detected: ${nextUrl}`);
+        } else {
+          console.log(`[Scraper] Page ${pagesScraped}: no next page detected`);
+        }
       } catch (nextError) {
         logger.warn('Scraper', 'Error getting next page URL: ' + nextError.message);
         nextUrl = null;
@@ -849,6 +1170,7 @@ async function scrapePages(page, options = {}) {
       stoppedReason = 'user-aborted';
     } else if (pagesScraped >= maxPages) {
       stoppedReason = 'max-pages';
+      console.log(`[Scraper] Reached MAX_PAGES=${maxPages}`);
     } else if (!nextUrl) {
       stoppedReason = 'no-next-page';
     }
@@ -871,6 +1193,7 @@ module.exports = {
   searchTeacherOn,
   scrapeListingPage,
   scrapePages,
+  scrollResultsPage,
   isBlockedByCloudflare,
   waitForCloudflareResolution,
   getNextPageUrl,
